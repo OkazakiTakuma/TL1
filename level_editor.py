@@ -1,5 +1,6 @@
 import bpy
 import math
+from bpy_extras.io_utils import ExportHelper
 
 # アドオンの情報
 bl_info = {
@@ -43,36 +44,78 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         return {'FINISHED'}
 
 # 3. シーン出力（エクスポート）機能
-class MYADDON_OT_export_scene(bpy.types.Operator):
+class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
     bl_idname = "myaddon.export_scene"
     bl_label = "シーンをエクスポート"
-    bl_description = "現在のシーンのオブジェクト情報をコンソールに出力します"
+    bl_description = "現在のシーンのオブジェクト情報をファイルに保存します"
     bl_options = {'REGISTER', 'UNDO'}
+    
+    filename_ext = ".scene"
+    
+    filter_glob: bpy.props.StringProperty(
+        default="*.scene",
+        options={'HIDDEN'},
+        maxlen=255,
+    )
 
+    # 【関数分け 1】履歴（ログ）を表示する専用の関数
+    def show_log(self, message):
+        print(message)                  # コンソールへの出力
+        self.report({'INFO'}, message)   # Blender画面下部へのポップアップ表示
+
+    # 【関数分け 2】オブジェクトの情報をファイルに書き込む専用の関数
+    def write_object_info(self, file, obj, level):
+        # 階層の深さに合わせて字下げ（半角スペース4つ分）を作る
+        indent = "    " * level
+        
+        # データの書き込み
+        file.write(f"{indent}名前: {obj.name}, 位置: {obj.location}\n")
+        
+        trans, rot, scale = obj.matrix_local.decompose()
+        rot = rot.to_euler()
+        
+        rot_x = math.degrees(rot.x)
+        rot_y = math.degrees(rot.y)  
+        rot_z = math.degrees(rot.z)
+        
+        file.write(f"{indent}座標: {trans}\n")
+        file.write(f"{indent}回転: X:{rot_x:.2f}, Y:{rot_y:.2f}, Z:{rot_z:.2f}\n")
+        file.write(f"{indent}スケール: {scale}\n") 
+        
+        if obj.parent:
+            file.write(f"{indent}親オブジェクト: {obj.parent.name}\n")
+            
+        file.write(f"{indent}--------------------\n")
+
+    # 【関数分け 3】シーンを再帰的に解析（パース）する専用の関数
+    def parse_scene_recursive(self, file, obj, level):
+        # 1. まず渡されたオブジェクトの情報を書き込む（関数2を呼び出す）
+        self.write_object_info(file, obj, level)
+        
+        # 2. 子オブジェクトがいたら、階層（level）を1つ下げて自分自身を呼び出す（再帰）
+        for child in obj.children:
+            self.parse_scene_recursive(file, child, level + 1)
+
+    # エクスポート処理の大枠（橋渡し役）
+    def export(self, context):
+        # 履歴表示関数を使って開始ログを出力
+        self.show_log(f"シーン情報出力開始... {self.filepath}")
+        
+        with open(self.filepath, 'w', encoding='utf-8') as file:
+            file.write("SCENE\n")
+            
+            # 親を持たない（ルートの）オブジェクトから解析をスタート
+            for obj in context.scene.objects:
+                if not obj.parent:
+                    # 再帰解析関数（関数3）を呼び出す
+                    self.parse_scene_recursive(file, obj, 0)
+
+        # 履歴表示関数を使って完了ログを出力
+        self.show_log(f"--- エクスポート完了: {self.filepath} ---")
+
+    # Blenderが実行するメインの処理
     def execute(self, context):
-        print("--- シーンのエクスポートを開始します ---")
-        
-        for obj in context.scene.objects:
-            print(f"名前: {obj.name}, 位置: {obj.location}")
-            
-            trans, rot, scale = obj.matrix_world.decompose()
-            rot = rot.to_euler()
-            
-            rot.x = math.degrees(rot.x)
-            rot.y = math.degrees(rot.y)  
-            rot.z = math.degrees(rot.z)
-            
-            print(f"座標: {trans}")
-            print(f"回転: {rot}")
-            print(f"スケール: {scale}") 
-            
-            # 【ポイント】ここのインデント（字下げ）をしっかり半角スペースで揃えています
-            if obj.parent:
-                print(f"親オブジェクト: {obj.parent.name}")
-
-        print("--- エクスポートが完了しました ---")
-        
-        self.report({'INFO'}, "シーン情報をコンソールに出力しました")
+        self.export(context)
         return {'FINISHED'}
 
 # 4. メニューの見た目や中身を定義するクラス
