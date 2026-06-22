@@ -134,12 +134,54 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
 def draw_menu_button(self, context):
     self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
 
+# 6. 【修正】プロパティ画面のパネル
+class OBJECT_PT_file_name(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_file_name"
+    bl_label = "ファイル名"
+    bl_space_type = 'PROPERTIES' # 【修正】正しいスペルに変更
+    bl_region_type = 'WINDOW'
+    bl_context = "object"
+
+    def draw(self, context):
+        # 【安全対策】オブジェクトが選択されていない場合は警告を出して、これ以上処理しない
+        if not context.object:
+            self.layout.label(text="オブジェクトを選択してください")
+            return
+
+        # オブジェクトが選択されている場合の処理
+        if "file_name" in context.object:
+            self.layout.prop(context.object, '["file_name"]', text=self.bl_label)
+        else:
+            self.layout.operator(MYADDON_OT_add_filename.bl_idname, text="ファイル名プロパティを追加")
+
+        self.layout.operator(MYADDON_OT_stretch_vertex.bl_idname, text="頂点を伸ばす")
+        self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text="Ico Sphereを作成")
+        self.layout.operator(MYADDON_OT_export_scene.bl_idname, text="シーンをエクスポート")
+
+# 7. 【修正】ファイル名プロパティを追加する機能
+class MYADDON_OT_add_filename(bpy.types.Operator):
+    bl_idname = "myaddon.myaddon_ot_add_filename"
+    bl_label = "Add File Name"
+    bl_description="['file_name']プロパティを追加する"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        # 【安全対策】ここでもオブジェクトが選択されているかチェックします
+        if context.object:
+            context.object["file_name"] = ""
+            return {'FINISHED'}
+        else:
+            self.report({'WARNING'}, "オブジェクトが選択されていません")
+            return {'CANCELLED'}
+
 # Blenderに登録するクラスのリスト
 classes = [
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
     MYADDON_OT_export_scene,
     TOPBAR_MT_my_menu,
+    MYADDON_OT_add_filename,
+    OBJECT_PT_file_name
 ]
 
 # アドオンが有効になったときの処理
