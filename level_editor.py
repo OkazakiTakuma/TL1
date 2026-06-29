@@ -1,6 +1,9 @@
 import bpy
 import math
-from bpy_extras.io_utils import ExportHelper
+import gpu
+import gpu_extras.batch
+import copy
+from bpy_extras.io_utils import ExportHelper # 【修正】1行にまとめました
 
 # アドオンの情報
 bl_info = {
@@ -58,17 +61,13 @@ class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
         maxlen=255,
     )
 
-    # 【関数分け 1】履歴（ログ）を表示する専用の関数
     def show_log(self, message):
-        print(message)                  # コンソールへの出力
-        self.report({'INFO'}, message)   # Blender画面下部へのポップアップ表示
+        print(message)                  
+        self.report({'INFO'}, message)   
 
-    # 【関数分け 2】オブジェクトの情報をファイルに書き込む専用の関数
     def write_object_info(self, file, obj, level):
-        # 階層の深さに合わせて字下げ（半角スペース4つ分）を作る
         indent = "    " * level
         
-        # データの書き込み
         file.write(f"{indent}名前: {obj.name}, 位置: {obj.location}\n")
         
         trans, rot, scale = obj.matrix_local.decompose()
@@ -87,33 +86,24 @@ class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
             
         file.write(f"{indent}--------------------\n")
 
-    # 【関数分け 3】シーンを再帰的に解析（パース）する専用の関数
     def parse_scene_recursive(self, file, obj, level):
-        # 1. まず渡されたオブジェクトの情報を書き込む（関数2を呼び出す）
         self.write_object_info(file, obj, level)
         
-        # 2. 子オブジェクトがいたら、階層（level）を1つ下げて自分自身を呼び出す（再帰）
         for child in obj.children:
             self.parse_scene_recursive(file, child, level + 1)
 
-    # エクスポート処理の大枠（橋渡し役）
     def export(self, context):
-        # 履歴表示関数を使って開始ログを出力
         self.show_log(f"シーン情報出力開始... {self.filepath}")
         
         with open(self.filepath, 'w', encoding='utf-8') as file:
             file.write("SCENE\n")
             
-            # 親を持たない（ルートの）オブジェクトから解析をスタート
             for obj in context.scene.objects:
                 if not obj.parent:
-                    # 再帰解析関数（関数3）を呼び出す
                     self.parse_scene_recursive(file, obj, 0)
 
-        # 履歴表示関数を使って完了ログを出力
         self.show_log(f"--- エクスポート完了: {self.filepath} ---")
 
-    # Blenderが実行するメインの処理
     def execute(self, context):
         self.export(context)
         return {'FINISHED'}
@@ -130,25 +120,80 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
         self.layout.operator("myaddon.create_ico_sphere", text="Ico Sphereを作成", icon='MESH_DATA')
         self.layout.operator("myaddon.export_scene", text="シーンをエクスポート", icon='EXPORT')
 
+# コライダー（線）を描画するクラス
+class DrawCollider:
+    handle = None
+    
+    def draw_collider():
+        vertices = {"pos": []} 
+        indices = []
+        offsets = [
+            [-0.5, -0.5, -0.5],
+            [+0.5, -0.5, -0.5],
+            [-0.5, +0.5, -0.5],
+            [+0.5, +0.5, -0.5],
+            [-0.5, -0.5, +0.5],
+            [+0.5, -0.5, +0.5],                   
+            [-0.5, +0.5, +0.5],
+            [+0.5, +0.5, +0.5],
+        ]        
+        size = [2, 2, 2]
+        
+        for obj in bpy.context.scene.objects:
+            start = len(vertices["pos"]) # 【修正】閉じカッコを追加しました
+            
+            for offset in offsets:
+                pos = obj.location.copy() # copy.copy()の代わりにBlenderの標準機能を使用
+                pos[0] += offset[0] * size[0]
+                pos[1] += offset[1] * size[1]
+                pos[2] += offset[2] * size[2]
+                vertices["pos"].append(pos)
+                
+            # 【修正】インデントを左にずらし、各オブジェクトにつき1回だけ線をつなぐようにしました
+            indices.append([start+0, start+1])
+            indices.append([start+2, start+3])
+            indices.append([start+0, start+2])
+            indices.append([start+1, start+3])
+            
+            indices.append([start+4, start+5])
+            indices.append([start+6, start+7])
+            indices.append([start+4, start+6])
+            indices.append([start+5, start+7])
+            
+            indices.append([start+0, start+4])
+            indices.append([start+1, start+5])
+            indices.append([start+2, start+6])
+            indices.append([start+3, start+7])
+        
+        # 【安全対策】シーンにオブジェクトが一つもない場合は描画をキャンセル
+        if not vertices["pos"]:
+            return
+        
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        batch = gpu_extras.batch.batch_for_shader(shader, "LINES", vertices, indices=indices)
+        color = [0.5, 1.0, 1.0, 1.0] # 水色 (R, G, B, Alpha)
+        
+        shader.bind()
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+
 # 5. トップバーにメニューを追加するための関数
 def draw_menu_button(self, context):
     self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
 
-# 6. 【修正】プロパティ画面のパネル
+# 6. プロパティ画面のパネル
 class OBJECT_PT_file_name(bpy.types.Panel):
     bl_idname = "OBJECT_PT_file_name"
     bl_label = "ファイル名"
-    bl_space_type = 'PROPERTIES' # 【修正】正しいスペルに変更
+    bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
     bl_context = "object"
 
     def draw(self, context):
-        # 【安全対策】オブジェクトが選択されていない場合は警告を出して、これ以上処理しない
         if not context.object:
             self.layout.label(text="オブジェクトを選択してください")
             return
 
-        # オブジェクトが選択されている場合の処理
         if "file_name" in context.object:
             self.layout.prop(context.object, '["file_name"]', text=self.bl_label)
         else:
@@ -158,7 +203,7 @@ class OBJECT_PT_file_name(bpy.types.Panel):
         self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text="Ico Sphereを作成")
         self.layout.operator(MYADDON_OT_export_scene.bl_idname, text="シーンをエクスポート")
 
-# 7. 【修正】ファイル名プロパティを追加する機能
+# 7. ファイル名プロパティを追加する機能
 class MYADDON_OT_add_filename(bpy.types.Operator):
     bl_idname = "myaddon.myaddon_ot_add_filename"
     bl_label = "Add File Name"
@@ -166,7 +211,6 @@ class MYADDON_OT_add_filename(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        # 【安全対策】ここでもオブジェクトが選択されているかチェックします
         if context.object:
             context.object["file_name"] = ""
             return {'FINISHED'}
@@ -190,6 +234,10 @@ def register():
         bpy.utils.register_class(cls)
     
     bpy.types.TOPBAR_MT_editor_menus.append(draw_menu_button)
+    
+    # 3Dビューに描画処理を登録
+    DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollider.draw_collider, (), "WINDOW", "POST_VIEW")
+    
     print("レベルエディタがアクティブになりました")
     
 # アドオンが無効になったときの処理
@@ -198,6 +246,9 @@ def unregister():
     
     for cls in classes:
         bpy.utils.unregister_class(cls)
+        
+    bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle, "WINDOW")
+    
     print("レベルエディタが非アクティブになりました")
 
 if __name__ == "__main__":
