@@ -3,6 +3,8 @@ import math
 import gpu
 import gpu_extras.batch
 import copy
+import json # 【新規】JSON出力用のモジュール
+import os   # 【新規】ファイルパス操作用のモジュール
 from bpy_extras.io_utils import ExportHelper
 
 # アドオンの情報
@@ -53,27 +55,52 @@ class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
     bl_description = "現在のシーンのオブジェクト情報をファイルに保存します"
     bl_options = {'REGISTER', 'UNDO'}
     
-    filename_ext = ".scene"
+    filename_ext = ".json" # 【変更】デフォルトの拡張子をJSONにしました
     
     filter_glob: bpy.props.StringProperty(
-        default="*.scene",
+        default="*.json;*.scene", # 【変更】両方の拡張子を表示できるようにしました
         options={'HIDDEN'},
         maxlen=255,
     )
+    
+    # 【新規】エクスポート画面で選択できるドロップダウンメニュー
+    format_type: bpy.props.EnumProperty(
+        name="ファイル形式",
+        description="出力するファイルのフォーマットを選択します",
+        items=[
+            ('JSON', "JSON (.json)", "ゲームエンジン等で扱いやすいJSON形式"),
+            ('TEXT', "テキスト (.scene)", "従来のカスタムテキスト形式"),
+        ],
+        default='JSON',
+    )
+    
+    # 【新規】エクスポート画面の右パネルにメニューを描画
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "format_type")
+        
+    # 【新規】メニューを切り替えた時に、ファイル名の拡張子を自動で書き換える安全処理
+    def check(self, context):
+        filepath = self.filepath
+        if filepath:
+            base, _ = os.path.splitext(filepath)
+            ext = ".json" if self.format_type == 'JSON' else ".scene"
+            new_filepath = base + ext
+            if new_filepath != filepath:
+                self.filepath = new_filepath
+                return True
+        return False
 
     def show_log(self, message):
         print(message)                  
         self.report({'INFO'}, message)   
 
+    # --- 従来テキスト形式用の処理 ---
     def write_object_info(self, file, obj, level):
         indent = "    " * level
-        
         file.write(f"{indent}名前: {obj.name}, 位置: {obj.location}\n")
-        
-        # 【新規】カスタムプロパティ（ファイル名、コライダー）の出力
         if "file_name" in obj:
             file.write(f"{indent}ファイル名: {obj['file_name']}\n")
-            
         if "collider" in obj:
             file.write(f"{indent}コライダー種類: {obj['collider']}\n")
             if "collider_size" in obj:
@@ -82,7 +109,6 @@ class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
         
         trans, rot, scale = obj.matrix_local.decompose()
         rot = rot.to_euler()
-        
         rot_x = math.degrees(rot.x)
         rot_y = math.degrees(rot.y)  
         rot_z = math.degrees(rot.z)
@@ -90,27 +116,72 @@ class MYADDON_OT_export_scene(bpy.types.Operator, ExportHelper):
         file.write(f"{indent}座標: {trans}\n")
         file.write(f"{indent}回転: X:{rot_x:.2f}, Y:{rot_y:.2f}, Z:{rot_z:.2f}\n")
         file.write(f"{indent}スケール: {scale}\n") 
-        
         if obj.parent:
             file.write(f"{indent}親オブジェクト: {obj.parent.name}\n")
-            
         file.write(f"{indent}--------------------\n")
 
     def parse_scene_recursive(self, file, obj, level):
         self.write_object_info(file, obj, level)
-        
         for child in obj.children:
             self.parse_scene_recursive(file, child, level + 1)
+            
+    # --- 【新規】JSON形式用の再帰処理 ---
+    def object_to_dict(self, obj):
+        trans, rot, scale = obj.matrix_local.decompose()
+        rot = rot.to_euler()
+        
+        # 基本情報（JSON化できるように、Blender特有の型から数値のリストへ変換します）
+        obj_data = {
+            "name": obj.name,
+            "location": [obj.location.x, obj.location.y, obj.location.z],
+            "rotation": [math.degrees(rot.x), math.degrees(rot.y), math.degrees(rot.z)],
+            "scale": [scale.x, scale.y, scale.z]
+        }
+        
+        # カスタムプロパティがあれば辞書に追加
+        if "file_name" in obj:
+            obj_data["file_name"] = obj["file_name"]
+            
+        if "collider" in obj:
+            obj_data["collider_type"] = obj["collider"]
+            if "collider_size" in obj:
+                # IDPropertyArray型をPython標準のlist型に変換
+                obj_data["collider_size"] = list(obj["collider_size"])
+                
+        if obj.parent:
+            obj_data["parent"] = obj.parent.name
+            
+        # 子オブジェクトが存在すれば、再帰的に処理してリスト化
+        if obj.children:
+            obj_data["children"] = [self.object_to_dict(child) for child in obj.children]
+            
+        return obj_data
 
+    # エクスポート処理の大枠
     def export(self, context):
         self.show_log(f"シーン情報出力開始... {self.filepath}")
         
-        with open(self.filepath, 'w', encoding='utf-8') as file:
-            file.write("SCENE\n")
-            
+        if self.format_type == 'JSON':
+            # 【新規】JSON形式での保存処理
+            scene_data = {
+                "scene_name": context.scene.name,
+                "objects": []
+            }
+            # ルートオブジェクトから解析をスタート
             for obj in context.scene.objects:
                 if not obj.parent:
-                    self.parse_scene_recursive(file, obj, 0)
+                    scene_data["objects"].append(self.object_to_dict(obj))
+                    
+            with open(self.filepath, 'w', encoding='utf-8') as file:
+                # indent=4 で人間が見ても綺麗に整形されたJSONにします
+                json.dump(scene_data, file, indent=4, ensure_ascii=False)
+        else:
+            # 従来のテキスト形式での保存処理
+            with open(self.filepath, 'w', encoding='utf-8') as file:
+                file.write("SCENE\n")
+                for obj in context.scene.objects:
+                    if not obj.parent:
+                        self.parse_scene_recursive(file, obj, 0)
 
         self.show_log(f"--- エクスポート完了: {self.filepath} ---")
 
@@ -182,7 +253,7 @@ class DrawCollider:
         
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
         batch = gpu_extras.batch.batch_for_shader(shader, "LINES", vertices, indices=indices)
-        color = [0.5, 1.0, 1.0, 1.0] # 水色 (R, G, B, Alpha)
+        color = [0.5, 1.0, 1.0, 1.0] 
         
         shader.bind()
         shader.uniform_float("color", color)
@@ -205,13 +276,11 @@ class OBJECT_PT_file_name(bpy.types.Panel):
             self.layout.label(text="オブジェクトを選択してください")
             return
 
-        # ファイル名プロパティの表示
         if "file_name" in context.object:
             self.layout.prop(context.object, '["file_name"]', text="ファイル名")
         else:
             self.layout.operator(MYADDON_OT_add_filename.bl_idname, text="ファイル名プロパティを追加")
 
-        # コライダープロパティの表示
         if "collider" in context.object:
             self.layout.prop(context.object, '["collider"]', text="コライダー種類")
             self.layout.prop(context.object, '["collider_size"]', text="サイズ")
@@ -220,7 +289,6 @@ class OBJECT_PT_file_name(bpy.types.Panel):
 
         self.layout.separator() 
 
-        # 既存の機能
         self.layout.operator(MYADDON_OT_stretch_vertex.bl_idname, text="頂点を伸ばす")
         self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text="Ico Sphereを作成")
         self.layout.operator(MYADDON_OT_export_scene.bl_idname, text="シーンをエクスポート")
@@ -267,26 +335,19 @@ classes = [
     OBJECT_PT_file_name
 ]
 
-# アドオンが有効になったときの処理
 def register():
     for cls in classes:        
         bpy.utils.register_class(cls)
     
     bpy.types.TOPBAR_MT_editor_menus.append(draw_menu_button)
-    
     DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollider.draw_collider, (), "WINDOW", "POST_VIEW")
-    
     print("レベルエディタがアクティブになりました")
     
-# アドオンが無効になったときの処理
 def unregister():
     bpy.types.TOPBAR_MT_editor_menus.remove(draw_menu_button)
-    
     for cls in classes:
         bpy.utils.unregister_class(cls)
-        
     bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle, "WINDOW")
-    
     print("レベルエディタが非アクティブになりました")
 
 if __name__ == "__main__":
